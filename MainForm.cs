@@ -1,6 +1,6 @@
 /*
- * Xibo - Digitial Signage - http://www.xibo.org.uk
- * Copyright (C) 2006-16 Daniel Garner
+ * Xibo - Digital Signage - http://www.xibo.org.uk
+ * Copyright (C) 2006-2018 Spring Signage Ltd
  *
  * This file is part of Xibo.
  *
@@ -69,7 +69,6 @@ namespace XiboClient
         double _layoutWidth;
         double _layoutHeight;
         double _scaleFactor;
-        private Size _clientSize;
 
         private StatLog _statLog;
         private Stat _stat;
@@ -116,7 +115,7 @@ namespace XiboClient
         public MainForm(IntPtr previewHandle)
         {
             InitializeComponent();
-            
+
             // Set the preview window of the screen saver selection 
             // dialog in Windows as the parent of this form.
             SetParent(this.Handle, previewHandle);
@@ -129,7 +128,7 @@ namespace XiboClient
             // preview window in the screen saver selection dialog in Windows.
             Rectangle ParentRect;
             GetClientRect(previewHandle, out ParentRect);
-            
+
             ApplicationSettings.Default.SizeX = ParentRect.Size.Width;
             ApplicationSettings.Default.SizeY = ParentRect.Size.Height;
             ApplicationSettings.Default.OffsetX = 0;
@@ -145,7 +144,7 @@ namespace XiboClient
 
             if (screenSaver)
                 InitializeScreenSaver(false);
-            
+
             InitializeXibo();
         }
 
@@ -171,21 +170,11 @@ namespace XiboClient
             // Default the XmdsConnection
             ApplicationSettings.Default.XmdsLastConnection = DateTime.MinValue;
 
-            // Override the default size if necessary
-            if (ApplicationSettings.Default.SizeX != 0)
-            {
-                _clientSize = new Size((int)ApplicationSettings.Default.SizeX, (int)ApplicationSettings.Default.SizeY);
-                Size = _clientSize;
-                WindowState = FormWindowState.Normal;
-                Location = new Point((int)ApplicationSettings.Default.OffsetX, (int)ApplicationSettings.Default.OffsetY);
-                StartPosition = FormStartPosition.Manual;
-            }
-            else
-            {
-                _clientSize = SystemInformation.PrimaryMonitorSize;
-                ApplicationSettings.Default.SizeX = _clientSize.Width;
-                ApplicationSettings.Default.SizeY = _clientSize.Height;
-            }
+            // Set the Main Window Size
+            SetMainWindowSize();
+
+            // Bind to the resize event
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged += SystemEvents_DisplaySettingsChanged;
 
             // Show in taskbar
             ShowInTaskbar = ApplicationSettings.Default.ShowInTaskbar;
@@ -251,7 +240,10 @@ namespace XiboClient
 #endif
             // An empty set of overlay regions
             _overlays = new Collection<Region>();
-            
+
+            // Switch to TLS 2.1
+            System.Net.ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+
             Trace.WriteLine(new LogMessage("MainForm", "Client Initialised"), LogType.Info.ToString());
         }
 
@@ -542,7 +534,7 @@ namespace XiboClient
                     {
                         using (xmds.xmds statusXmds = new xmds.xmds())
                         {
-                            statusXmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds;
+                            statusXmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds + "&method=notifyStatus";
                             statusXmds.NotifyStatusAsync(ApplicationSettings.Default.ServerKey, ApplicationSettings.Default.HardwareKey, "{\"currentLayoutId\":" + _layoutId + "}");
                         }
                     }
@@ -558,16 +550,24 @@ namespace XiboClient
                 if (!(ex is DefaultLayoutException))
                     Trace.WriteLine(new LogMessage("MainForm - ChangeToNextLayout", "Layout Change to " + layoutPath + " failed. Exception raised was: " + ex.Message), LogType.Error.ToString());
 
-                if (!_showingSplash)
-                    ShowSplashScreen();
-                
-                // In 10 seconds fire the next layout
-                System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
-                timer.Interval = 10000;
-                timer.Tick += new EventHandler(splashScreenTimer_Tick);
+                // Do we have more than one Layout in our schedule?
+                if (_schedule.ActiveLayouts > 1)
+                {
+                    _schedule.NextLayout();
+                }
+                else
+                {
+                    if (!_showingSplash)
+                        ShowSplashScreen();
 
-                // Start the timer
-                timer.Start();
+                    // In 10 seconds fire the next layout
+                    System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+                    timer.Interval = 10000;
+                    timer.Tick += new EventHandler(splashScreenTimer_Tick);
+
+                    // Start the timer
+                    timer.Start();
+                }
             }
 
             // We have finished changing the layout
@@ -620,7 +620,7 @@ namespace XiboClient
                         fs.Close();
                     }
                 }
-                catch (IOException ioEx) 
+                catch (IOException ioEx)
                 {
                     _cacheManager.Remove(layoutPath);
                     Trace.WriteLine(new LogMessage("MainForm - PrepareLayout", "IOException: " + ioEx.ToString()), LogType.Error.ToString());
@@ -639,9 +639,11 @@ namespace XiboClient
             _layoutWidth = int.Parse(layoutAttributes["width"].Value, CultureInfo.InvariantCulture);
             _layoutHeight = int.Parse(layoutAttributes["height"].Value, CultureInfo.InvariantCulture);
 
+            // Are stats enabled for this Layout?
+            bool isStatEnabled = (layoutAttributes["enableStat"] == null) ? true : (int.Parse(layoutAttributes["enableStat"].Value) == 1);
 
             // Scaling factor, will be applied to all regions
-            _scaleFactor = Math.Min(_clientSize.Width / _layoutWidth, _clientSize.Height / _layoutHeight);
+            _scaleFactor = Math.Min(ClientSize.Width / _layoutWidth, ClientSize.Height / _layoutHeight);
 
             // Want to be able to center this shiv - therefore work out which one of these is going to have left overs
             int backgroundWidth = (int)(_layoutWidth * _scaleFactor);
@@ -652,8 +654,8 @@ namespace XiboClient
 
             try
             {
-                leftOverX = Math.Abs(_clientSize.Width - backgroundWidth);
-                leftOverY = Math.Abs(_clientSize.Height - backgroundHeight);
+                leftOverX = Math.Abs(ClientSize.Width - backgroundWidth);
+                leftOverY = Math.Abs(ClientSize.Height - backgroundHeight);
 
                 if (leftOverX != 0) leftOverX = leftOverX / 2;
                 if (leftOverY != 0) leftOverY = leftOverY / 2;
@@ -668,11 +670,12 @@ namespace XiboClient
             _regions = new Collection<Region>();
             RegionOptions options = new RegionOptions();
             options.LayoutModifiedDate = layoutModifiedTime;
+            options.LayoutSize = ClientSize;
 
             // Deal with the color
             try
             {
-                if (layoutAttributes["bgcolor"].Value != "")
+                if (layoutAttributes["bgcolor"] != null && layoutAttributes["bgcolor"].Value != "")
                 {
                     this.BackColor = ColorTranslator.FromHtml(layoutAttributes["bgcolor"].Value);
                     options.backgroundColor = layoutAttributes["bgcolor"].Value;
@@ -704,11 +707,14 @@ namespace XiboClient
                     BackgroundImage = null;
                     options.backgroundImage = "";
                 }
+
+                // We have loaded a layout background and therefore are no longer showing the splash screen
+                _showingSplash = false;
             }
             catch (Exception ex)
             {
                 Trace.WriteLine(new LogMessage("MainForm - PrepareLayout", "Unable to set background: " + ex.Message), LogType.Error.ToString());
-                
+
                 // Assume there is no background image
                 this.BackgroundImage = null;
                 options.backgroundImage = "";
@@ -752,6 +758,7 @@ namespace XiboClient
             _stat.scheduleID = _scheduleId;
             _stat.layoutID = _layoutId;
             _stat.fromDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            _stat.isEnabled = isStatEnabled;
 
             foreach (XmlNode region in listRegions)
             {
@@ -786,6 +793,7 @@ namespace XiboClient
                 options.height = (int)(Convert.ToDouble(nodeAttibutes["height"].Value, CultureInfo.InvariantCulture) * _scaleFactor);
                 options.left = (int)(Convert.ToDouble(nodeAttibutes["left"].Value, CultureInfo.InvariantCulture) * _scaleFactor);
                 options.top = (int)(Convert.ToDouble(nodeAttibutes["top"].Value, CultureInfo.InvariantCulture) * _scaleFactor);
+
                 options.scaleFactor = _scaleFactor;
 
                 // Store the original width and original height for scaling
@@ -818,18 +826,11 @@ namespace XiboClient
                 Debug.WriteLine("Adding region", "MainForm - Prepare Layout");
             }
 
-            // We have loaded a layout and therefore are no longer showing the splash screen
-            _showingSplash = false;
-
             // Null stuff
             listRegions = null;
             listMedia = null;
 
-            // Bring overlays to the front
-            foreach (Region region in _overlays)
-            {
-                region.BringToFront();
-            }
+            bringOverlaysForward();
         }
 
         /// <summary>
@@ -871,7 +872,7 @@ namespace XiboClient
                 {
                     using (Image bgSplash = Image.FromFile(ApplicationSettings.Default.SplashOverride))
                     {
-                        Bitmap bmpSplash = new Bitmap(bgSplash, _clientSize);
+                        Bitmap bmpSplash = new Bitmap(bgSplash, ClientSize);
                         BackgroundImage = bmpSplash;
                     }
                 }
@@ -903,7 +904,7 @@ namespace XiboClient
             {
                 using (Image bgSplash = Image.FromStream(resourceStream))
                 {
-                    Bitmap bmpSplash = new Bitmap(bgSplash, _clientSize);
+                    Bitmap bmpSplash = new Bitmap(bgSplash, ClientSize);
                     BackgroundImage = bmpSplash;
                 }
             }
@@ -944,7 +945,7 @@ namespace XiboClient
             }
 
             bool isExpired = true;
-            
+
             // Check the other regions to see if they are also expired.
             foreach (Region temp in _regions)
             {
@@ -968,7 +969,7 @@ namespace XiboClient
 
                 // We are changing the layout
                 _changingLayout = true;
-                
+
                 // Yield and restart
                 _schedule.NextLayout();
             }
@@ -977,11 +978,11 @@ namespace XiboClient
         /// <summary>
         /// Disposes Layout - removes the controls
         /// </summary>
-        private void DestroyLayout() 
+        private void DestroyLayout()
         {
             Debug.WriteLine("Destroying Layout", "MainForm - DestoryLayout");
 
-            if (_regions == null) 
+            if (_regions == null)
                 return;
 
             lock (_regions)
@@ -995,7 +996,7 @@ namespace XiboClient
 
                         // Clear the region
                         region.Clear();
-                        
+
                         Trace.WriteLine(new LogMessage("MainForm - DestoryLayout", "Calling Dispose on Region " + region.regionOptions.regionId), LogType.Audit.ToString());
                         region.Dispose();
                     }
@@ -1026,17 +1027,21 @@ namespace XiboClient
                     break;
 
                 case "Top Right":
-                    position = new Point(_clientSize.Width, 0);
+                    position = new Point(ClientSize.Width, 0);
                     break;
 
                 case "Bottom Left":
-                    position = new Point(0, _clientSize.Height);
+                    position = new Point(0, ClientSize.Height);
                     break;
 
                 case "Bottom Right":
-                default:
-                    position = new Point(_clientSize.Width, _clientSize.Height);
+                    position = new Point(ClientSize.Width, ClientSize.Height);
                     break;
+
+                default:
+                    // The default position or "unchanged" as it will be sent, is to not do anything
+                    // leave the cursor where it is
+                    return;
             }
 
             Cursor.Position = position;
@@ -1081,30 +1086,50 @@ namespace XiboClient
             try
             {
                 // Parse all overlays and compare what we have now to the overlays we have already created (see OverlayRegions)
+                Debug.WriteLine("Arrived at Manage Overlays with " + overlays.Count + " overlay schedules to show. We're already showing " + _overlays.Count + " overlay Regions", "Overlays");
 
-                // Take the ones we currently have up and remove them if they aren't in the new list
+                // Take the ones we currently have up and remove them if they aren't in the new list or if they've been set to refresh
                 // We use a for loop so that we are able to remove the region from the collection
                 for (int i = 0; i < _overlays.Count; i++)
                 {
+                    Debug.WriteLine("Assessing Overlay Region " + i, "Overlays");
+
                     Region region = _overlays[i];
                     bool found = false;
+                    bool refresh = false;
 
                     foreach (ScheduleItem item in overlays)
                     {
-                        if (item.scheduleid == region.scheduleId && _cacheManager.GetMD5(item.id + ".xlf") == region.hash)
+                        if (item.scheduleid == region.scheduleId)
                         {
                             found = true;
+                            refresh = item.Refresh;
                             break;
                         }
                     }
 
-                    if (!found)
+                    if (!found || refresh)
                     {
-                        Debug.WriteLine("Removing overlay which is no-longer required. Overlay: " + region.scheduleId, "Overlays");
+                        if (refresh)
+                        {
+                            Trace.WriteLine(new LogMessage("MainForm - ManageOverlays", "Refreshing item that has changed."), LogType.Info.ToString());
+                        }
+                        Debug.WriteLine("Removing overlay " + i + " which is no-longer required. Overlay: " + region.scheduleId, "Overlays");
+
+                        // Remove the Region from the overlays collection
+                        _overlays.Remove(region);
+
+                        // As we've removed the thing we're iterating over, reduce i
+                        i--;
+
+                        // Clear down and dispose of the region.
                         region.Clear();
                         region.Dispose();
                         Controls.Remove(region);
-                        _overlays.Remove(region);
+                    }
+                    else
+                    {
+                        Debug.WriteLine("Overlay Region found and not needing refresh " + i, "Overlays");
                     }
                 }
 
@@ -1123,7 +1148,13 @@ namespace XiboClient
                     }
 
                     if (found)
+                    {
+                        Debug.WriteLine("Region already found for overlay - we're assuming here that if we've found one, they are all there.", "Overlays");
                         continue;
+                    }
+
+                    // Reset refresh
+                    item.Refresh = false;
 
                     // Parse the layout for regions, and create them.
                     string layoutPath = item.layoutFile;
@@ -1161,7 +1192,7 @@ namespace XiboClient
                     double layoutHeight = int.Parse(layoutAttributes["height"].Value, CultureInfo.InvariantCulture);
 
                     // Scaling factor, will be applied to all regions
-                    double scaleFactor = Math.Min(_clientSize.Width / layoutWidth, _clientSize.Height / layoutHeight);
+                    double scaleFactor = Math.Min(ClientSize.Width / layoutWidth, ClientSize.Height / layoutHeight);
 
                     // Want to be able to center this shiv - therefore work out which one of these is going to have left overs
                     int backgroundWidth = (int)(layoutWidth * scaleFactor);
@@ -1172,8 +1203,8 @@ namespace XiboClient
 
                     try
                     {
-                        leftOverX = Math.Abs(_clientSize.Width - backgroundWidth);
-                        leftOverY = Math.Abs(_clientSize.Height - backgroundHeight);
+                        leftOverX = Math.Abs(ClientSize.Width - backgroundWidth);
+                        leftOverY = Math.Abs(ClientSize.Height - backgroundHeight);
 
                         if (leftOverX != 0) leftOverX = leftOverX / 2;
                         if (leftOverY != 0) leftOverY = leftOverY / 2;
@@ -1186,6 +1217,20 @@ namespace XiboClient
 
                     // New region and region options objects
                     RegionOptions options = new RegionOptions();
+
+                    // Deal with the color
+                    // this is imperfect, but we haven't any way to make these controls transparent.
+                    try
+                    {
+                        if (layoutAttributes["bgcolor"] != null && layoutAttributes["bgcolor"].Value != "")
+                        {
+                            options.backgroundColor = layoutAttributes["bgcolor"].Value;
+                        }
+                    }
+                    catch
+                    {
+                        options.backgroundColor = "#000000";
+                    }
 
                     // Get the regions
                     XmlNodeList listRegions = layoutXml.SelectNodes("/layout/region");
@@ -1228,7 +1273,6 @@ namespace XiboClient
 
                         Region temp = new Region(ref _statLog, ref _cacheManager);
                         temp.scheduleId = item.scheduleid;
-                        temp.hash = _cacheManager.GetMD5(item.id + ".xlf");
                         temp.BorderStyle = _borderStyle;
 
                         // Dont be fooled, this innocent little statement kicks everything off
@@ -1249,6 +1293,82 @@ namespace XiboClient
             {
                 Trace.WriteLine(new LogMessage("MainForm - _schedule_OverlayChangeEvent", "Unknown issue managing overlays. Ex = " + e.Message), LogType.Info.ToString());
             }
+
+            bringOverlaysForward();
+        }
+
+        private void bringOverlaysForward()
+        {
+            // Bring overlays to the front
+            foreach (Region region in _overlays)
+            {
+                region.BringToFront();
+            }
+        }
+
+        /// <summary>
+        /// Set the Main Window Size, either to the primary monitor, or the configured size
+        /// </summary>
+        private void SetMainWindowSize()
+        {
+            Debug.WriteLine("SetMainWindowSize: IN");
+
+            // Override the default size if necessary
+            if (ApplicationSettings.Default.SizeX != 0 || ApplicationSettings.Default.SizeY != 0)
+            {
+                Debug.WriteLine("SetMainWindowSize: Use Settings Size");
+
+                // Determine the client size
+                int sizeX = (int)ApplicationSettings.Default.SizeX;
+                if (sizeX <= 0)
+                {
+                    sizeX = SystemInformation.PrimaryMonitorSize.Width;
+                }
+
+                int sizeY = (int)ApplicationSettings.Default.SizeY;
+                if (sizeY <= 0)
+                {
+                    sizeY = SystemInformation.PrimaryMonitorSize.Height;
+                }
+
+                ClientSize = new Size(sizeX, sizeY);
+                StartPosition = FormStartPosition.Manual;
+                Location = new Point((int)ApplicationSettings.Default.OffsetX, (int)ApplicationSettings.Default.OffsetY);
+            }
+            else
+            {
+                Debug.WriteLine("SetMainWindowSize: Use Monitor Size");
+
+                // Use the primary monitor size
+                ClientSize = SystemInformation.PrimaryMonitorSize;
+            }
+
+            Debug.WriteLine("SetMainWindowSize: Setting Size to " + ClientSize.Width + "x" + ClientSize.Height);
+
+            // Use the client size we've calculated to set the actual size of the form
+            WindowState = FormWindowState.Normal;
+            Size = ClientSize;
+
+            Debug.WriteLine("SetMainWindowSize: OUT");
+        }
+
+        /// <summary>
+        /// Display Settings Changed
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void SystemEvents_DisplaySettingsChanged(object sender, EventArgs e)
+        {
+            Trace.WriteLine(new LogMessage("SystemEvents_DisplaySettingsChanged", "Display Settings have changed, resizing the Player window and moving on to the next Layout. W=" + SystemInformation.PrimaryMonitorSize.Width.ToString() + ", H=" + SystemInformation.PrimaryMonitorSize.Height.ToString()), LogType.Info.ToString());
+
+            // Reassert the size of our client (should resize if necessary)
+            SetMainWindowSize();
+
+            // Expire the current layout and move on
+            _changingLayout = true;
+
+            // Yield and restart
+            _schedule.NextLayout();
         }
     }
 }

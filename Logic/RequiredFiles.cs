@@ -1,6 +1,6 @@
 /*
- * Xibo - Digitial Signage - http://www.xibo.org.uk
- * Copyright (C) 2011-14 Daniel Garner
+ * Xibo - Digital Signage - http://www.xibo.org.uk
+ * Copyright (C) 2019 Xibo Signage Ltd
  *
  * This file is part of Xibo.
  *
@@ -91,7 +91,7 @@ namespace XiboClient
 
             // Start up the Xmds Service Object
             _report.Credentials = null;
-            _report.Url = ApplicationSettings.Default.XiboClient_xmds_xmds;
+            _report.Url = ApplicationSettings.Default.XiboClient_xmds_xmds + "&method=mediaInventory";
             _report.UseDefaultCredentials = false;
         }
 
@@ -167,15 +167,27 @@ namespace XiboClient
 
                             try
                             {
-                                updated = int.Parse(attributes["updated"].Value);
+                                updated = (attributes["updated"] != null) ? int.Parse(attributes["updated"].Value) : 0;
                             }
-                            catch (Exception) {}
+                            catch (Exception e)
+                            {
+                                Debug.WriteLine("Can't read Updated attribute from Resource node. e = " + e.Message, "RequiredFiles");
+                            }
 
                             DateTime updatedDt = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
                             updatedDt = updatedDt.AddSeconds(updated);
 
-                            if (File.GetLastWriteTimeUtc(ApplicationSettings.Default.LibraryPath + @"\" + rf.MediaId + ".htm") > updatedDt)
+                            DateTime fileUpdatedDt = File.GetLastWriteTimeUtc(ApplicationSettings.Default.LibraryPath + @"\" + rf.MediaId + ".htm");
+
+                            if (fileUpdatedDt > updatedDt)
+                            {
+                                Debug.WriteLine("Resource node does not need updating. Current: " + fileUpdatedDt + ", XMDS: " + updatedDt + ", updated: " + updated, "RequiredFiles");
                                 rf.Complete = true;
+                            }
+                            else
+                            {
+                                Debug.WriteLine("Resource node needs updating. Current: " + fileUpdatedDt + ", XMDS: " + updatedDt, "RequiredFiles");
+                            }
                         }
 
                         // Add to the Rf Node
@@ -329,29 +341,11 @@ namespace XiboClient
                 {
                     if (RequiredFileList[i].Id == id)
                     {
+                        // We're complete, so we should assume that we're not downloading anything
+                        RequiredFileList[i].Downloading = false;
+
+                        // Complete and store MD5
                         RequiredFileList[i].Complete = true;
-                        RequiredFileList[i].Md5 = md5;
-
-                        break;
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Mark a RequiredFile as incomplete
-        /// </summary>
-        /// <param name="id"></param>
-        /// <param name="md5"></param>
-        public void MarkIncomplete(int id, string md5)
-        {
-            lock (_locker)
-            {
-                for (int i = 0; i < RequiredFileList.Count; i++)
-                {
-                    if (RequiredFileList[i].Id == id)
-                    {
-                        RequiredFileList[i].Complete = false;
                         RequiredFileList[i].Md5 = md5;
 
                         break;

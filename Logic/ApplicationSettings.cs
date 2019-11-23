@@ -1,13 +1,14 @@
-﻿/*
- * Xibo - Digitial Signage - http://www.xibo.org.uk
- * Copyright (C) 2006-17 Spring Signage Ltd
+﻿/**
+ * Copyright (C) 2019 Xibo Signage Ltd
+ *
+ * Xibo - Digital Signage - http://www.xibo.org.uk
  *
  * This file is part of Xibo.
  *
  * Xibo is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
- * any later version. 
+ * any later version.
  *
  * Xibo is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -40,9 +41,9 @@ namespace XiboClient
         private List<string> _globalProperties;
 
         // Application Specific Settings we want to protect
-        private string _clientVersion = "1.8.1";
-        private string _version = "5";
-        private int _clientCodeVersion = 128;
+        private readonly string _clientVersion = "2 R201";
+        private readonly string _version = "5";
+        private readonly int _clientCodeVersion = 201;
 
         public string ClientVersion { get { return _clientVersion; } }
         public string Version { get { return _version; } }
@@ -112,7 +113,9 @@ namespace XiboClient
 
                 // Load the hardware key
                 if (File.Exists(_instance.LibraryPath + "\\hardwarekey"))
+                {
                     _instance.HardwareKey = File.ReadAllText(_instance.LibraryPath + "\\hardwarekey");
+                }
 
                 // Load the player settings
                 _instance.AppendConfigFile(_instance.LibraryPath + "\\config.xml");
@@ -319,6 +322,7 @@ namespace XiboClient
         public decimal EmptyLayoutDuration { get; set; }
 
         public bool EnableExpiredFileDeletion { get; set; }
+        public bool ForceHttps { get; set; }
 
         public int LibraryAgentInterval { get; set; }
 
@@ -328,6 +332,8 @@ namespace XiboClient
         public string CacheManagerFile { get; set; }
         public string RequiredFilesFile { get; set; }
         public string VideoRenderingEngine { get; set; }
+        public string NewCmsAddress { get; set; }
+        public string NewCmsKey { get; set; }
 
         private string _libraryPath;
         public string LibraryPath 
@@ -498,6 +504,7 @@ namespace XiboClient
         public int CollectInterval { get; set; }
         public int MaxConcurrentDownloads { get; set; }
         public int ScreenShotRequestInterval { get; set; }
+        public int ScreenShotSize { get; set; }
 
         private int _maxLogFileUploads;
         public int MaxLogFileUploads { get { return ((_maxLogFileUploads == 0) ? 10 : _maxLogFileUploads); } set { _maxLogFileUploads = value; } }
@@ -512,6 +519,7 @@ namespace XiboClient
         public bool ClientInfomationCtrlKey { get; set; }
         public bool SendCurrentLayoutAsStatusUpdate { get; set; }
         public bool PreventSleep { get; set; }
+        public bool ScreenShotRequested { get; set; }
 
         // XMDS Status Flags
         private DateTime _xmdsLastConnection;

@@ -246,7 +246,11 @@ namespace XiboClient
         /// </summary>
         private void _scheduleManager_OnNewScheduleAvailable()
         {
-            _overlaySchedule = _scheduleManager.CurrentOverlaySchedule;
+            Debug.WriteLine("New Schedule Available", "Schedule");
+            Debug.WriteLine(_scheduleManager.CurrentOverlaySchedule.Count + " overlays", "Schedule");
+            Debug.WriteLine(_scheduleManager.CurrentSchedule.Count + " normal schedules", "Schedule");
+
+            _overlaySchedule = new Collection<ScheduleItem>(_scheduleManager.CurrentOverlaySchedule);
             _layoutSchedule = _scheduleManager.CurrentSchedule;
 
             // Set the current pointer to 0
@@ -273,6 +277,10 @@ namespace XiboClient
         /// </summary>
         void _scheduleManager_OnScheduleManagerCheckComplete()
         {
+            // XMR address is present and has received at least 1 heart beat
+            bool xmrShouldBeRunning = (!string.IsNullOrEmpty(ApplicationSettings.Default.XmrNetworkAddress) && _xmrSubscriber.LastHeartBeat != DateTime.MinValue);
+
+            // If the agent threads are all alive, and either XMR shouldn't be running OR the subscriber thread is alive.
             if (agentThreadsAlive())
             {
                 // Update status marker on the main thread.
@@ -280,31 +288,23 @@ namespace XiboClient
             }
             else
             {
-                Trace.WriteLine(new LogMessage("Schedule - OnScheduleManagerCheckComplete", "Agent threads are dead, not updating status.json"), LogType.Error.ToString());
+                Trace.WriteLine(new LogMessage("Schedule - OnScheduleManagerCheckComplete", "Agent threads/XMR is dead, not updating status.json"), LogType.Error.ToString());
             }
-            
-            try
-            {
-                // See if XMR should be running
-                if (!string.IsNullOrEmpty(ApplicationSettings.Default.XmrNetworkAddress) && _xmrSubscriber.LastHeartBeat != DateTime.MinValue)
-                {
-                    // Log when severly overdue a check
-                    if (_xmrSubscriber.LastHeartBeat < DateTime.Now.AddHours(-1))
-                    {
-                        Trace.WriteLine(new LogMessage("Schedule - OnScheduleManagerCheckComplete", "XMR heart beat last received over an hour ago."));
-                    }
 
-                    // Check to see if the last update date was over 5 minutes ago
-                    if (_xmrSubscriber.LastHeartBeat < DateTime.Now.AddMinutes(-5))
-                    {
-                        // Reconfigure it
-                        _registerAgent_OnXmrReconfigure();   
-                    }
-                }
-            }
-            catch (Exception e)
+            // Log for overdue XMR
+            if (xmrShouldBeRunning && _xmrSubscriber.LastHeartBeat < DateTime.Now.AddHours(-1))
             {
-                Trace.WriteLine(new LogMessage("Schedule - OnScheduleManagerCheckComplete", "Error = " + e.Message), LogType.Error.ToString());
+                _clientInfoForm.XmrSubscriberStatus = "Long term Inactive (" + ApplicationSettings.Default.XmrNetworkAddress + "), last activity: " + _xmrSubscriber.LastHeartBeat.ToString();
+                Trace.WriteLine(new LogMessage("Schedule - OnScheduleManagerCheckComplete", "XMR heart beat last received over an hour ago."));
+
+                // Issue an XMR restart if we've gone this long without connecting
+                // we do this because we suspect that the TCP socket has died without notifying the poller
+                restartXmr();
+            }
+            else if (xmrShouldBeRunning && _xmrSubscriber.LastHeartBeat < DateTime.Now.AddMinutes(-5))
+            {
+                _clientInfoForm.XmrSubscriberStatus = "Inactive (" + ApplicationSettings.Default.XmrNetworkAddress + "), last activity: " + _xmrSubscriber.LastHeartBeat.ToString();
+                Trace.WriteLine(new LogMessage("Schedule - OnScheduleManagerCheckComplete", "XMR heart beat last received over 5 minutes ago."), LogType.Audit.ToString());
             }
         }
         
@@ -317,7 +317,8 @@ namespace XiboClient
             return _registerAgentThread.IsAlive &&
                 _scheduleAndRfAgentThread.IsAlive &&
                 _logAgentThread.IsAlive &&
-                _libraryAgentThread.IsAlive;
+                _libraryAgentThread.IsAlive &&
+                _xmrSubscriberThread.IsAlive;
         }
 
         /// <summary>
@@ -325,34 +326,7 @@ namespace XiboClient
         /// </summary>
         void _registerAgent_OnXmrReconfigure()
         {
-            try
-            {
-                // Stop and start the XMR thread
-                if (_xmrSubscriberThread != null && _xmrSubscriberThread.IsAlive)
-                {
-                    _xmrSubscriberThread.Abort();
-                }
-            }
-            catch (Exception e)
-            {
-                Trace.WriteLine(new LogMessage("Schedule - OnXmrReconfigure", "Unable to abort Subscriber. " + e.Message), LogType.Error.ToString());
-            }
-
-            try
-            {
-                // Reassert the hardware key, incase its changed at all
-                _xmrSubscriber.HardwareKey = _hardwareKey;
-                
-                // Start the thread again
-                _xmrSubscriberThread = new Thread(new ThreadStart(_xmrSubscriber.Run));
-                _xmrSubscriberThread.Name = "XmrSubscriber";
-
-                _xmrSubscriberThread.Start();
-            }
-            catch (Exception e)
-            {
-                Trace.WriteLine(new LogMessage("Schedule - OnXmrReconfigure", "Unable to start Subscriber. " + e.Message), LogType.Error.ToString());
-            }
+            restartXmr();
         }
 
         /// <summary>
@@ -439,6 +413,22 @@ namespace XiboClient
         }
 
         /// <summary>
+        /// Restart XMR
+        /// </summary>
+        public void restartXmr()
+        {
+            try
+            {
+                // Stop and start the XMR thread
+                _xmrSubscriber.Restart();
+            }
+            catch (Exception e)
+            {
+                Trace.WriteLine(new LogMessage("Schedule - restartXmr", "Unable to restart XMR: " + e.Message), LogType.Error.ToString());
+            }
+        }
+
+        /// <summary>
         /// Moves the layout on
         /// </summary>
         public void NextLayout()
@@ -502,25 +492,26 @@ namespace XiboClient
         {
             Trace.WriteLine(new LogMessage("Schedule - LayoutFileModified", "Layout file changed: " + layoutPath), LogType.Info.ToString());
 
-            // Determine if we need to reassess the overlays
-            foreach (ScheduleItem item in _overlaySchedule)
-            {
-                if (item.layoutFile == ApplicationSettings.Default.LibraryPath + @"\" + layoutPath)
-                {
-                    if (OverlayChangeEvent != null)
-                        OverlayChangeEvent(_overlaySchedule);
-
-                    break;
-                }
-            }
-
-            // Tell the schedule to refresh
-            _scheduleManager.RefreshSchedule = true;
-
             // Are we set to expire modified layouts? If not then just return as if
             // nothing had happened.
             if (!ApplicationSettings.Default.ExpireModifiedLayouts)
                 return;
+
+            // Determine if we need to reassess the overlays
+            bool changeRequired = false;
+
+            foreach (ScheduleItem item in _overlaySchedule)
+            {
+                if (item.layoutFile == ApplicationSettings.Default.LibraryPath + @"\" + layoutPath)
+                {
+                    // We should mark this item as being one to remove and re-add.
+                    item.Refresh = true;
+                    changeRequired = true;
+                }
+            }
+
+            if (OverlayChangeEvent != null && changeRequired)
+                OverlayChangeEvent(_overlaySchedule);
 
             // If the layout that got changed is the current layout, move on
             try
@@ -548,6 +539,7 @@ namespace XiboClient
                         Trace.WriteLine(new LogMessage("Schedule - LayoutFileModified", "The current layout is now invalid, refreshing the current schedule."), LogType.Audit.ToString());
 
                         // We should not force a change and we should tell the schedule manager to run now
+                        _scheduleManager.RefreshSchedule = true;
                         _scheduleManager.RunNow();
                     }
                     else
@@ -604,7 +596,10 @@ namespace XiboClient
             _logAgent.Stop();
 
             // Stop the subsriber thread
-            _xmrSubscriberThread.Abort();
+            _xmrSubscriber.Stop();
+
+            // Clean up any NetMQ sockets, etc (false means don't block).
+            NetMQ.NetMQConfig.Cleanup(false);
 
             // Stop the embedded server
             _server.Stop();

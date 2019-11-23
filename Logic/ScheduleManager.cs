@@ -257,10 +257,6 @@ namespace XiboClient
                                 }
                             }
                         }
-
-                        // Write a flag to the status.xml file
-                        if (OnScheduleManagerCheckComplete != null)
-                            OnScheduleManagerCheckComplete();
                     }
                     catch (Exception ex)
                     {
@@ -271,7 +267,8 @@ namespace XiboClient
                 }
 
                 // Completed this check
-                OnScheduleManagerCheckComplete();
+                if (OnScheduleManagerCheckComplete != null)
+                    OnScheduleManagerCheckComplete();
 
                 // Sleep this thread for 10 seconds
                 _manualReset.WaitOne(10 * 1000);
@@ -286,6 +283,9 @@ namespace XiboClient
         /// <returns></returns>
         private bool IsNewScheduleAvailable()
         {
+            // Remove completed change actions
+            removeLayoutChangeActionIfComplete();
+
             // Remove completed overlay actions
             removeOverlayLayoutActionIfComplete();
 
@@ -342,6 +342,7 @@ namespace XiboClient
             // Log
             List<string> currentScheduleString = new List<string>();
             List<string> newScheduleString = new List<string>();
+            List<string> newOverlaysString = new List<string>();
 
             // Are all the items that were in the _currentSchedule still there?
             foreach (ScheduleItem layout in _currentSchedule)
@@ -354,7 +355,7 @@ namespace XiboClient
                 currentScheduleString.Add(layout.ToString());
             }
             
-            foreach (ScheduleItem layout in _currentSchedule)
+            foreach (ScheduleItem layout in newSchedule)
             {
                 newScheduleString.Add(layout.ToString());
             }
@@ -362,14 +363,31 @@ namespace XiboClient
             Trace.WriteLine(new LogMessage("ScheduleManager - IsNewScheduleAvailable", "Layouts in Current Schedule: " + string.Join(Environment.NewLine, currentScheduleString)), LogType.Audit.ToString());
             Trace.WriteLine(new LogMessage("ScheduleManager - IsNewScheduleAvailable", "Layouts in New Schedule: " + string.Join(Environment.NewLine, newScheduleString)), LogType.Audit.ToString());
 
-
-            // Are all the items that were in the _currentOverlaySchedule still there?
-            foreach (ScheduleItem layout in _currentOverlaySchedule)
+            // Old layout overlays
+            foreach (ScheduleItem layout in overlaySchedule)
             {
-                if (!overlaySchedule.Contains(layout))
-                    forceChange = true;
+                newOverlaysString.Add(layout.ToString());
             }
 
+            // Try to work out whether the overlay schedule has changed or not.
+            // easiest way to do this is to see if the sizes have changed
+            if (_currentOverlaySchedule.Count != overlaySchedule.Count)
+            {
+                forceChange = true;
+            }
+            else
+            {
+                // Compare them on an object by object level.
+                // Are all the items that were in the _currentOverlaySchedule still there?
+                foreach (ScheduleItem layout in _currentOverlaySchedule)
+                {
+                    // New overlay schedule doesn't contain the layout?
+                    if (!overlaySchedule.Contains(layout))
+                        forceChange = true;
+                }
+            }
+
+            Trace.WriteLine(new LogMessage("ScheduleManager - IsNewScheduleAvailable", "Overlay Layouts: " + string.Join(Environment.NewLine, newOverlaysString)), LogType.Audit.ToString());
 
             // Set the new schedule
             _currentSchedule = newSchedule;
@@ -789,8 +807,10 @@ namespace XiboClient
                 if (action.downloadRequired)
                     continue;
 
+                DateTime actionCreateDt = DateTime.Parse(action.createdDt);
+                
                 ScheduleItem item = new ScheduleItem();
-                item.FromDt = DateTime.MinValue;
+                item.FromDt = actionCreateDt.AddSeconds(-1);
                 item.ToDt = DateTime.MaxValue;
                 item.id = action.layoutId;
                 item.scheduleid = 0;
@@ -946,6 +966,9 @@ namespace XiboClient
 
             foreach (ScheduleItem layoutSchedule in CurrentSchedule)
             {
+                if (layoutSchedule.Override)
+                    layoutsInSchedule += "API Action ";
+
                 layoutsInSchedule += "LayoutId: " + layoutSchedule.id + ". Runs from " + layoutSchedule.FromDt.ToString() + Environment.NewLine;
             }
 
@@ -1016,6 +1039,22 @@ namespace XiboClient
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Remove Layout Change actions if they have completed
+        /// </summary>
+        public void removeLayoutChangeActionIfComplete()
+        {
+            // Check every action to see if complete
+            foreach (LayoutChangePlayerAction action in _layoutChangeActions)
+            {
+                if (action.IsServiced())
+                {
+                    _layoutChangeActions.Remove(action);
+                    RefreshSchedule = true;
+                }
+            }
         }
 
         /// <summary>

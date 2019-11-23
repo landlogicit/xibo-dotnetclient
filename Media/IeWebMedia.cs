@@ -1,13 +1,14 @@
-﻿/*
- * Xibo - Digitial Signage - http://www.xibo.org.uk
- * Copyright (C) 2014-2016 Spring Signage Ltd
+﻿/**
+ * Copyright (C) 2019 Xibo Signage Ltd
+ *
+ * Xibo - Digital Signage - http://www.xibo.org.uk
  *
  * This file is part of Xibo.
  *
  * Xibo is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
- * any later version. 
+ * any later version.
  *
  * Xibo is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -32,7 +33,7 @@ namespace XiboClient
     class IeWebMedia : Media
     {
         private bool _disposed = false;
-        private string _filePath;
+        protected string _filePath;
         private string _localWebPath;
         private RegionOptions _options;
         private WebBrowser _webBrowser;
@@ -46,14 +47,11 @@ namespace XiboClient
             // and store them in member variables.
             _options = options;
 
-            // Check to see if the mode option is present.
-            string modeId = options.Dictionary.Get("modeid");
-            bool nativeOpen = modeId != string.Empty && modeId == "1";
-
-            if (nativeOpen)
+            // Set the file path/local web path
+            if (IsNativeOpen())
             {
                 // If we are modeid == 1, then just open the webpage without adjusting the file path
-                _filePath = Uri.UnescapeDataString(options.uri).Replace('+', ' ');
+                _filePath = Uri.UnescapeDataString(_options.uri).Replace('+', ' ');
             }
             else
             {
@@ -61,7 +59,23 @@ namespace XiboClient
                 _filePath = ApplicationSettings.Default.LibraryPath + @"\" + _options.mediaid + ".htm";
                 _localWebPath = ApplicationSettings.Default.EmbeddedServerAddress + _options.mediaid + ".htm";
             }
+        }
 
+        /// <summary>
+        /// Is this a native open widget
+        /// </summary>
+        /// <returns></returns>
+        protected virtual bool IsNativeOpen()
+        {
+            string modeId = _options.Dictionary.Get("modeid");
+            return modeId != string.Empty && modeId == "1";
+        }
+
+        /// <summary>
+        /// Render Media
+        /// </summary>
+        public override void RenderMedia()
+        {
             // Create the web view we will use
             _webBrowser = new WebBrowser();
             _webBrowser.DocumentCompleted += _webBrowser_DocumentCompleted;
@@ -70,9 +84,9 @@ namespace XiboClient
             _webBrowser.ScriptErrorsSuppressed = true;
             _webBrowser.Visible = false;
 
-            if (nativeOpen)
+            if (IsNativeOpen())
             {
-                // Nativate directly
+                // Navigate directly
                 _webBrowser.Navigate(_filePath);
             }
             else if (HtmlReady())
@@ -90,8 +104,8 @@ namespace XiboClient
 
             Controls.Add(_webBrowser);
 
-            // Show the control
-            Show();
+            // Render media shows the controls and starts timers, etc
+            base.RenderMedia();
         }
 
         /// <summary>
@@ -205,7 +219,7 @@ namespace XiboClient
         private void RefreshFromXmds()
         {
             xmds.xmds xmds = new XiboClient.xmds.xmds();
-            xmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds;
+            xmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds + "&method=getResource";
             xmds.GetResourceCompleted += new XiboClient.xmds.GetResourceCompletedEventHandler(xmds_GetResourceCompleted);
 
             xmds.GetResourceAsync(ApplicationSettings.Default.ServerKey, ApplicationSettings.Default.HardwareKey, _options.layoutId, _options.regionId, _options.mediaid, ApplicationSettings.Default.Version);
@@ -267,8 +281,10 @@ namespace XiboClient
                         bodyStyle = "background-image: url('" + _options.backgroundImage + "'); background-attachment:fixed; background-color:" + backgroundColor + "; background-repeat: no-repeat; background-position: " + _options.backgroundLeft + "px " + _options.backgroundTop + "px;";
                     }
 
-                    string html = cachedFile.Replace("</head>", "<style type='text/css'>body {" + bodyStyle + " }</style></head>");
+                    string html = cachedFile.Replace("</head>", "<!--START_STYLE_ADJUST--><style type='text/css'>body {" + bodyStyle + " }</style><!--END_STYLE_ADJUST--></head>");
                     html = html.Replace("[[ViewPortWidth]]", _width.ToString());
+                    html += "<!--VIEWPORT=" + _width.ToString() + "x" + _height.ToString() + "-->";
+                    html += "<!--CACHEDATE=" + DateTime.Now.ToString() + "-->";
 
                     // Comment in to write out the update date at the end of the file (in the body)
                     // This is useful if you want to check how frequently the file is updating
@@ -324,8 +340,16 @@ namespace XiboClient
                 }
             }
 
-            if (cachedFile.Contains("[[ViewPortWidth]]"))
+            // Compare the cached dimensions in the file with the dimensions now, and 
+            // regenerate if they are different.
+            if (cachedFile.Contains("[[ViewPortWidth]]") || !ReadCachedViewPort(cachedFile).Equals(_width.ToString() + "x" + _height.ToString()))
             {
+                // Regex out the existing replacement if present
+                cachedFile = Regex.Replace(cachedFile, "<!--START_STYLE_ADJUST-->(.*)<!--END_STYLE_ADJUST-->", "");
+                cachedFile = Regex.Replace(cachedFile, "<meta name=\"viewport\" content=\"width=(.*)\" />", "<meta name=\"viewport\" content=\"width=[[ViewPortWidth]]\" />");
+                cachedFile = Regex.Replace(cachedFile, "<!--VIEWPORT=(.*)-->", "");
+                cachedFile = Regex.Replace(cachedFile, "<!--CACHEDATE=(.*)-->", "");
+
                 // Handle the background
                 String bodyStyle;
                 String backgroundColor = _options.Dictionary.Get("backgroundColor", _options.backgroundColor);
@@ -339,8 +363,10 @@ namespace XiboClient
                     bodyStyle = "background-image: url('" + _options.backgroundImage + "'); background-attachment:fixed; background-color:" + backgroundColor + "; background-repeat: no-repeat; background-position: " + _options.backgroundLeft + "px " + _options.backgroundTop + "px;";
                 }
 
-                string html = cachedFile.Replace("</head>", "<style type='text/css'>body {" + bodyStyle + " }</style></head>");
+                string html = cachedFile.Replace("</head>", "<!--START_STYLE_ADJUST--><style type='text/css'>body {" + bodyStyle + " }</style><!--END_STYLE_ADJUST--></head>");
                 html = html.Replace("[[ViewPortWidth]]", _width.ToString());
+                html += "<!--VIEWPORT=" + _width.ToString() + "x" + _height.ToString() + "-->";
+                html += "<!--CACHEDATE=" + DateTime.Now.ToString() + "-->";
 
                 // Write to the library
                 using (FileStream fileStream = File.Open(_filePath, FileMode.Create, FileAccess.Write, FileShare.Read))
@@ -355,12 +381,38 @@ namespace XiboClient
         }
 
         /// <summary>
+        /// Pulls the duration out of the temporary file and sets the media Duration to the same
+        /// </summary>
+        private string ReadCachedViewPort(string html)
+        {
+            // Parse out the duration using a regular expression
+            try
+            {
+                Match match = Regex.Match(html, "<!--VIEWPORT=(.*?)-->");
+
+                if (match.Success)
+                {
+                    // We have a match, so override our duration.
+                    return match.Groups[1].Value;
+                }
+                else
+                {
+                    return string.Empty;
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        /// <summary>
         /// Dispose of this text item
         /// </summary>
         /// <param name="disposing"></param>
         protected override void Dispose(bool disposing)
         {
-            _disposed = true;
+            Debug.WriteLine("Disposing of " + _filePath, "IeWebMedia - Dispose");
 
             if (disposing)
             {
@@ -374,9 +426,14 @@ namespace XiboClient
                     PerformLayout();
 
                     // Detatch event and remove
-                    _webBrowser.DocumentCompleted -= _webBrowser_DocumentCompleted;
-                    _webBrowser.Navigate("about:blank");
-                    _webBrowser.Dispose();
+                    if (_webBrowser != null && !_disposed)
+                    {
+                        _webBrowser.DocumentCompleted -= _webBrowser_DocumentCompleted;
+                        _webBrowser.Navigate("about:blank");
+                        _webBrowser.Dispose();
+
+                        _disposed = true;
+                    }
                 }
                 catch (Exception e)
                 {

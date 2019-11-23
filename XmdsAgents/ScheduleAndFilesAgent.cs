@@ -28,6 +28,7 @@ using XiboClient.Log;
 using System.Net;
 using System.Globalization;
 using System.IO;
+using Newtonsoft.Json;
 
 /// 17/02/12 Dan Created
 /// 20/02/12 Dan Added ClientInfo
@@ -119,7 +120,9 @@ namespace XiboClient.XmdsAgents
         /// </summary>
         public ScheduleAndFilesAgent()
         {
-            _fileDownloadLimit = new Semaphore(ApplicationSettings.Default.MaxConcurrentDownloads, ApplicationSettings.Default.MaxConcurrentDownloads);
+            int limit = (ApplicationSettings.Default.MaxConcurrentDownloads <= 0) ? 1 : ApplicationSettings.Default.MaxConcurrentDownloads;
+
+            _fileDownloadLimit = new Semaphore(limit, limit);
             _requiredFiles = new RequiredFiles();
         }
 
@@ -177,7 +180,7 @@ namespace XiboClient.XmdsAgents
                                 using (xmds.xmds xmds = new xmds.xmds())
                                 {
                                     xmds.Credentials = null;
-                                    xmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds;
+                                    xmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds + "&method=requiredFiles";
                                     xmds.UseDefaultCredentials = false;
 
                                     // Get required files from XMDS
@@ -359,22 +362,38 @@ namespace XiboClient.XmdsAgents
 
         private void reportStorage()
         {
-            // Use Drive Info
-            foreach (DriveInfo drive in DriveInfo.GetDrives())
+            StringBuilder sb = new StringBuilder();
+            StringWriter sw = new StringWriter(sb);
+
+            using (JsonWriter writer = new JsonTextWriter(sw))
             {
-                if (drive.IsReady && ApplicationSettings.Default.LibraryPath.Contains(drive.RootDirectory.FullName))
+                writer.Formatting = Newtonsoft.Json.Formatting.None;
+                writer.WriteStartObject();
+                writer.WritePropertyName("deviceName");
+                writer.WriteValue(Environment.MachineName);
+
+                // Use Drive Info
+                foreach (DriveInfo drive in DriveInfo.GetDrives())
                 {
-                    using (xmds.xmds xmds = new xmds.xmds())
+                    if (drive.IsReady && ApplicationSettings.Default.LibraryPath.Contains(drive.RootDirectory.FullName))
                     {
-                        string status = "{\"availableSpace\":\"" + drive.TotalFreeSpace + "\", \"totalSpace\":\"" + drive.TotalSize + "\", \"deviceName\":\"" + Environment.MachineName + "\"}";
-
-                        xmds.Credentials = null;
-                        xmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds;
-                        xmds.UseDefaultCredentials = false;
-                        xmds.NotifyStatusAsync(ApplicationSettings.Default.ServerKey, ApplicationSettings.Default.HardwareKey, status);
+                        writer.WritePropertyName("availableSpace");
+                        writer.WriteValue(drive.TotalFreeSpace);
+                        writer.WritePropertyName("totalSpace");
+                        writer.WriteValue(drive.TotalSize);
+                        break;
                     }
+                }
+                
+                writer.WriteEndObject();
 
-                    break;
+                // Report
+                using (xmds.xmds xmds = new xmds.xmds())
+                {
+                    xmds.Credentials = null;
+                    xmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds + "&method=notifyStatus";
+                    xmds.UseDefaultCredentials = false;
+                    xmds.NotifyStatusAsync(ApplicationSettings.Default.ServerKey, ApplicationSettings.Default.HardwareKey, sb.ToString());
                 }
             }
         }
@@ -396,7 +415,7 @@ namespace XiboClient.XmdsAgents
                 using (xmds.xmds xmds = new xmds.xmds())
                 {
                     xmds.Credentials = null;
-                    xmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds;
+                    xmds.Url = ApplicationSettings.Default.XiboClient_xmds_xmds + "&method=schedule";
                     xmds.UseDefaultCredentials = false;
 
                     string scheduleXml = xmds.Schedule(ApplicationSettings.Default.ServerKey, _hardwareKey);
